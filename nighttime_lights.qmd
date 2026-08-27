@@ -1,0 +1,40 @@
+---
+title: "nighttime_lights.qmd"
+format: html
+editor: visual
+---
+
+## Quarto
+
+Quarto enables you to weave together content and executable code into a finished document. To learn more about Quarto see <https://quarto.org>.
+
+## Running Code
+
+When you click the **Render** button a document will be generated that includes both content and the output of embedded code. You can embed code like this:
+
+```{r}
+1 + 1
+```
+
+You can add options to executable code like this
+
+```{r}
+#| echo: false
+2 * 2
+```
+
+The `echo: false` option disables the printing of code (only output is displayed).
+
+- Pick storm (tropical storm Lala)
+
+- Pick an area (Honolulu)
+
+- Look up visualization with Black Marble of before data (8/13) to see normal power
+
+- Creat visualizations for dates of affected are be storm (8/14-8/16)
+
+- Creat visualization of effter effect (8/17-8/20)
+
+- Compare visualizations to find ares affected be the storm to find areas without power and how long it took for power restoration
+
+- Look up power outages form power compones and other officale sorces to compare visual data with other data
