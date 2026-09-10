@@ -1,0 +1,585 @@
+---
+title: "Project 1"
+format: html
+editor: visual
+---
+
+## Quarto
+
+Quarto enables you to weave together content and executable code into a finished document. To learn more about Quarto see <https://quarto.org>.
+
+## Running Code
+
+When you click the **Render** button a document will be generated that includes both content and the output of embedded code. You can embed code like this:
+
+```{r}
+1 + 1
+```
+
+You can add options to executable code like this
+
+```{r}
+#| echo: false
+2 * 2
+```
+
+The `echo: false` option disables the printing of code (only output is displayed).
+
+```{r}
+library(tidyverse)
+library(tigris)
+library(sf)
+library(blackmarbler)
+library(purrr)
+library(terra)
+library(tidyterra)
+library(lubridate)
+library(arrow)
+library(here)
+library(exactextractr)
+library(tmap)
+library(mapview)
+library(gt)
+library(vembedr)
+
+bearer <- get_nasa_token(username = "Drex258", 
+                         password = "Pizza0873670!")
+```
+
+```{r}
+storm_dates_1 <- ("2026-08-14")
+storm_dates_2 <- ("2026-08-15")
+storm_dates_3 <- ("2026-08-16")
+storm_dates_4 <- ("2026-08-17")
+after_dates_1 <- ("2026-08-18")
+after_dates_2 <- ("2026-08-19")
+after_dates_3 <- ("2026-08-20")
+after_dates_4 <- ("2026-08-21")
+baseline_dates <- seq.Date(from = as.Date("2026-08-03"), to = as.Date("2026-08-13"), by = "day")
+all_dates <- c(baseline_dates, storm_dates_1, storm_dates_2, storm_dates_3, storm_dates_4, after_dates_1, after_dates_2, after_dates_3, after_dates_4)
+```
+
+```{r}
+roi_hawaii <- counties(state = "HI", cb = TRUE, year = 2022) |>
+  st_transform(4326) |>
+  st_crop(xmin = -160.5, xmax = -154.5, ymin = 18.5, ymax = 22.5) |>
+  filter(NAMELSAD != "Kalawao County") |>
+  mutate(county = gsub(" County", "", NAME))
+```
+
+```{r}
+pull_one_date <- function(d) {
+  tryCatch({
+    bm_raster(roi_sf = roi_hawaii,
+              product_id = "VNP46A2",
+              date = d,
+              bearer = bearer,
+              quality_flag_rm = 2)
+  }, error = function(e) {
+    message("Failed for ", d, ": ", conditionMessage(e))
+    NULL
+  })
+}
+
+r_list <- map(all_dates, pull_one_date)
+names(r_list) <- as.character(all_dates)
+r_list <- compact(r_list)
+
+message("Dates successfully pulled: ", paste(names(r_list), collapse = ", "))
+message("Dates dropped (no imagery / failed): ",
+        paste(setdiff(as.character(all_dates), names(r_list)), collapse = ", "))
+
+r_all <- rast(r_list)
+
+baseline_ok <- intersect(as.character(baseline_dates), names(r_all))
+storm_ok_1 <- intersect(as.character(storm_dates_1), names(r_all))
+storm_ok_2 <- intersect(as.character(storm_dates_2), names(r_all))
+storm_ok_3 <- intersect(as.character(storm_dates_3), names(r_all))
+storm_ok_4 <- intersect(as.character(storm_dates_4), names(r_all))
+after_ok_1 <- intersect(as.character(after_dates_1), names(r_all))
+after_ok_2 <- intersect(as.character(after_dates_2), names(r_all))
+after_ok_3 <- intersect(as.character(after_dates_3), names(r_all))
+after_ok_4 <- intersect(as.character(after_dates_4), names(r_all))
+
+
+r_baseline <- r_all[[baseline_ok]]
+r_storm_1 <- r_all[[storm_ok_1]]
+r_storm_2 <- r_all[[storm_ok_2]]
+r_storm_3 <- r_all[[storm_ok_3]]
+r_storm_4 <- r_all[[storm_ok_4]]
+r_after_1 <- r_all[[after_ok_1]]
+r_after_2 <- r_all[[after_ok_2]]
+r_after_3 <- r_all[[after_ok_3]]
+r_after_4 <- r_all[[after_ok_4]]
+```
+
+```{r}
+r_baseline <- terra::mask(r_baseline, roi_hawaii)
+r_storm_1  <- terra::mask(r_storm_1, roi_hawaii)
+r_storm_2  <- terra::mask(r_storm_2, roi_hawaii)
+r_storm_3  <- terra::mask(r_storm_3, roi_hawaii)
+r_storm_4  <- terra::mask(r_storm_4, roi_hawaii)
+r_after_1  <- terra::mask(r_after_1, roi_hawaii)
+r_after_2  <- terra::mask(r_after_2, roi_hawaii)
+r_after_3  <- terra::mask(r_after_3, roi_hawaii)
+r_after_4  <- terra::mask(r_after_4, roi_hawaii)
+
+completeness_check <- tibble(
+  date = c(baseline_ok, storm_ok_1, storm_ok_2, storm_ok_3, storm_ok_4, after_ok_1, after_ok_2, after_ok_3, after_ok_4),
+  
+  period = c(
+    rep("Baseline", length(baseline_ok)), 
+    rep("Storm 1", length(storm_ok_1)), 
+    rep("Storm 2", length(storm_ok_2)), 
+    rep("Storm 3", length(storm_ok_3)), 
+    rep("Storm 4", length(storm_ok_4)), 
+    rep("After 1", length(after_ok_1)),
+    rep("After 2", length(after_ok_2)), 
+    rep("After 3", length(after_ok_3)), 
+    rep("After 4", length(after_ok_4))
+  ), # <-- Added comma and closed c() properly here
+  
+  n_valid_pixels = c(
+    sapply(seq_len(nlyr(r_baseline)), function(i) sum(!is.na(values(r_baseline[[i]])))),
+    sapply(seq_len(nlyr(r_storm_1)), function(i) sum(!is.na(values(r_storm_1[[i]])))),
+    sapply(seq_len(nlyr(r_storm_2)), function(i) sum(!is.na(values(r_storm_2[[i]])))),
+    sapply(seq_len(nlyr(r_storm_3)), function(i) sum(!is.na(values(r_storm_3[[i]])))),
+    sapply(seq_len(nlyr(r_storm_4)), function(i) sum(!is.na(values(r_storm_4[[i]])))),
+    sapply(seq_len(nlyr(r_after_1)), function(i) sum(!is.na(values(r_after_1[[i]])))),
+    sapply(seq_len(nlyr(r_after_2)), function(i) sum(!is.na(values(r_after_2[[i]])))),
+    sapply(seq_len(nlyr(r_after_3)), function(i) sum(!is.na(values(r_after_3[[i]])))),
+    sapply(seq_len(nlyr(r_after_4)), function(i) sum(!is.na(values(r_after_4[[i]]))))
+  )
+)
+
+print(completeness_check)
+```
+
+```{r}
+# 1. Update the function to accept the actual date vector explicitly
+extract_from_local <- function(raster_stack, roi_sf, date_vector) {
+  map_dfr(seq_len(nlyr(raster_stack)), function(i) {
+    layer <- raster_stack[[i]]
+    vals <- exact_extract(layer, roi_sf, fun = "mean")
+    
+    tibble(
+      county   = roi_sf$county,
+      date     = as.Date(date_vector[i]), # Uses your explicit date vectors safely
+      ntl_mean = vals
+    )
+  })
+}
+
+# 2. Combine rows (Removed the duplicate Storm 1 block)
+ntl_trend <- bind_rows(
+  extract_from_local(r_baseline, roi_hawaii, baseline_ok) |> mutate(period = "Baseline"),
+  extract_from_local(r_storm_1,  roi_hawaii, storm_ok_1)  |> mutate(period = "Storm 1"),
+  extract_from_local(r_storm_2,  roi_hawaii, storm_ok_2)  |> mutate(period = "Storm 2"),
+  extract_from_local(r_storm_3,  roi_hawaii, storm_ok_3)  |> mutate(period = "Storm 3"),
+  extract_from_local(r_storm_4,  roi_hawaii, storm_ok_4)  |> mutate(period = "Storm 4"),
+  extract_from_local(r_after_1,  roi_hawaii, after_ok_1)  |> mutate(period = "After 1"),
+  extract_from_local(r_after_2,  roi_hawaii, after_ok_2)  |> mutate(period = "After 2"),
+  extract_from_local(r_after_3,  roi_hawaii, after_ok_3)  |> mutate(period = "After 3"),
+  extract_from_local(r_after_4,  roi_hawaii, after_ok_4)  |> mutate(period = "After 4")
+)
+
+# 3. Create a broader group for color assignment 
+statewide_trend <- ntl_trend |> 
+  group_by(date, period) |> 
+  summarize(ntl_mean = mean(ntl_mean, na.rm = TRUE), .groups = "drop") |> 
+  mutate(color_group = if_else(period == "Baseline", "Baseline", "Storm and After"))
+
+# 4. Plot using 'color_group' for the fill aesthetic instead of 'period'
+ggplot(statewide_trend, aes(x = date, y = ntl_mean, fill = color_group)) + 
+  geom_col() + 
+  scale_fill_manual(values = c("Baseline" = "grey70", "Storm and After" = "firebrick")) + 
+  labs(
+    title    = "Statewide Mean Nighttime Radiance by Day", 
+    subtitle = "Comparing tracking periods before, during, and after the storm event", 
+    x        = "Date", 
+    y        = "Mean radiance", 
+    fill     = NULL
+  ) + 
+  theme_minimal()
+
+```
+
+```{r}
+# 1. Put all your raster objects into a named list
+raster_list <- list(
+  "Baseline" = r_baseline, "Storm 1" = r_storm_1, "Storm 2" = r_storm_2,
+  "Storm 3"  = r_storm_3,  "Storm 4" = r_storm_4,  "After 1" = r_after_1,
+  "After 2"  = r_after_2,  "After 3" = r_after_3,  "After 4" = r_after_4
+)
+
+# 2. Put all your date vectors into a matching list
+date_list <- list(
+  "Baseline" = baseline_ok, "Storm 1" = storm_ok_1, "Storm 2" = storm_ok_2,
+  "Storm 3"  = storm_ok_3,  "Storm 4" = storm_ok_4,  "After 1" = after_ok_1,
+  "After 2"  = after_ok_2,  "After 3" = after_ok_3,  "After 4" = after_ok_4
+)
+
+# 3. Cleanly process everything in one loop
+completeness_check <- imap_dfr(raster_list, function(raster_obj, period_name) {
+  
+  # Calculate valid pixels safely using terra's built-in global count
+  # global() is much faster and uses less memory than values()
+  valid_counts <- terra::global(raster_obj, fun = function(x) sum(!is.na(x)))[, 1]
+  
+  tibble(
+    date           = date_list[[period_name]],
+    period         = period_name,
+    n_valid_pixels = valid_counts
+  )
+})
+
+print(completeness_check)
+```
+
+```{r}
+oahu_boundary <- roi_hawaii |> filter(county == "Honolulu")
+
+baseline_mean <- mean(r_baseline, na.rm = TRUE) |> crop(oahu_boundary) |> mask(oahu_boundary)
+storm_mean_1 <- mean(r_storm_1, na.rm = TRUE) |> crop(oahu_boundary) |> mask(oahu_boundary)
+storm_mean_2 <- mean(r_storm_2, na.rm = TRUE) |> crop(oahu_boundary) |> mask(oahu_boundary)
+storm_mean_3 <- mean(r_storm_3, na.rm = TRUE) |> crop(oahu_boundary) |> mask(oahu_boundary)
+storm_mean_4 <- mean(r_storm_4, na.rm = TRUE) |> crop(oahu_boundary) |> mask(oahu_boundary)
+after_mean_1 <- mean(r_after_1, na.rm = TRUE) |> crop(oahu_boundary) |> mask(oahu_boundary)
+after_mean_2 <- mean(r_after_2, na.rm = TRUE) |> crop(oahu_boundary) |> mask(oahu_boundary)
+after_mean_3 <- mean(r_after_3, na.rm = TRUE) |> crop(oahu_boundary) |> mask(oahu_boundary)
+after_mean_4 <- mean(r_after_4, na.rm = TRUE) |> crop(oahu_boundary) |> mask(oahu_boundary)
+```
+
+```{r}
+# 1. Clean up both rasters to the study area boundary
+baseline_clean <- terra::crop(baseline_mean, roi_hawaii) |> terra::mask(roi_hawaii)
+storm_clean    <- terra::crop(r_storm_1, roi_hawaii)    |> terra::mask(roi_hawaii)
+
+# 2. Resample baseline to match the exact resolution and alignment of the storm raster
+# 'near' is best for categorical data, 'bilinear' is ideal for continuous imagery (like radiance)
+baseline_resampled <- terra::resample(baseline_clean, storm_clean, method = "bilinear")
+
+# 3. Extract values (they are now guaranteed to have the exact same size)
+paired_values <- tibble(
+  baseline = values(baseline_resampled)[, 1],
+  storm_1  = values(storm_clean)[, 1]
+) |> 
+  filter(!is.na(baseline), !is.na(storm_1)) 
+
+# 4. Plot the matched pixels
+ggplot(paired_values, aes(x = baseline, y = storm_1)) + 
+  geom_point(alpha = 0.15, size = 0.5) +
+  geom_abline(slope = 1, intercept = 0, color = "firebrick", linetype = "dashed") +
+  labs(
+    title = paste0("Oahu: Storm 1 vs. Baseline Radiance, Per Pixel (", storm_dates_1, ")"), 
+    subtitle = "Points below the dashed line got darker; above got brighter", 
+    x = "Baseline radiance", 
+    y = "Storm-night 1 radiance"
+  ) + 
+  theme_minimal()
+
+```
+
+```{r paired-scatter-storms}
+storm1_clean <- terra::crop(r_storm_1, roi_hawaii)
+storm1_clean <- terra::mask(storm1_clean, roi_hawaii)
+
+storm2_clean <- terra::crop(r_storm_2, roi_hawaii)
+storm2_clean <- terra::mask(storm2_clean, roi_hawaii)
+
+paired_storm_values <- tibble(
+  storm_1 = values(storm1_clean)[, 1],
+  storm_2 = values(storm2_clean)[, 1]
+) |> 
+  filter(!is.na(storm_1), !is.na(storm_2)) 
+
+ggplot(paired_storm_values, aes(x = storm_1, y = storm_2)) + 
+  geom_point(alpha = 0.15, size = 0.5) +
+  geom_abline(slope = 1, intercept = 0, color = "firebrick", linetype = "dashed") +
+  labs(
+    title = "Oahu: Storm 2 vs. Storm 1 Radiance, Per Pixel", 
+    subtitle = "Points below the dashed line got darker in Storm 2; above got brighter", 
+    x = "Storm-night 1 radiance", 
+    y = "Storm-night 2 radiance"
+  ) + 
+  theme_minimal()
+
+paired_storm_values |> 
+  summarize(
+    n_darkened_in_storm2 = sum(storm_2 < storm_1),
+    n_total              = n(),
+    pct_darkened_storm2  = round(mean(storm_2 < storm_1) * 100, 1)
+  )
+
+```
+
+```{r}
+storm2_clean <- terra::crop(r_storm_2, roi_hawaii)
+storm2_clean <- terra::mask(storm2_clean, roi_hawaii)
+
+storm3_clean <- terra::crop(r_storm_3, roi_hawaii)
+storm3_clean <- terra::mask(storm3_clean, roi_hawaii)
+
+paired_storm_values <- tibble(
+  storm_2 = values(storm2_clean)[, 1],
+  storm_3 = values(storm3_clean)[, 1]
+) |> 
+  filter(!is.na(storm_2), !is.na(storm_3)) 
+
+ggplot(paired_storm_values, aes(x = storm_2, y = storm_3)) + 
+  geom_point(alpha = 0.15, size = 0.5) +
+  geom_abline(slope = 1, intercept = 0, color = "firebrick", linetype = "dashed") +
+  labs(
+    title = "Oahu: Storm 3 vs. Storm 2 Radiance, Per Pixel", 
+    subtitle = "Points below the dashed line got darker in Storm 3; above got brighter", 
+    x = "Storm-night 2 radiance", 
+    y = "Storm-night 3 radiance"
+  ) + 
+  theme_minimal()
+
+paired_storm_values |> 
+  summarize(
+    n_darkened_in_storm3 = sum(storm_3 < storm_2),
+    n_total              = n(),
+    pct_darkened_storm3  = round(mean(storm_3 < storm_2) * 100, 1)
+  )
+
+```
+
+```{r}
+storm3_clean <- terra::crop(r_storm_3, roi_hawaii)
+storm3_clean <- terra::mask(storm3_clean, roi_hawaii)
+
+storm4_clean <- terra::crop(r_storm_4, roi_hawaii)
+storm4_clean <- terra::mask(storm4_clean, roi_hawaii)
+
+paired_storm_values <- tibble(
+  storm_3 = values(storm3_clean)[, 1],
+  storm_4 = values(storm4_clean)[, 1]
+) |> 
+  filter(!is.na(storm_3), !is.na(storm_4)) 
+
+ggplot(paired_storm_values, aes(x = storm_3, y = storm_4)) + 
+  geom_point(alpha = 0.15, size = 0.5) +
+  geom_abline(slope = 1, intercept = 0, color = "firebrick", linetype = "dashed") +
+  labs(
+    title = "Oahu: Storm 4 vs. Storm 3 Radiance, Per Pixel", 
+    subtitle = "Points below the dashed line got darker in Storm 4; above got brighter", 
+    x = "Storm-night 3 radiance", 
+    y = "Storm-night 4 radiance"
+  ) + 
+  theme_minimal()
+
+paired_storm_values |> 
+  summarize(
+    n_darkened_in_storm4 = sum(storm_4 < storm_3),
+    n_total              = n(),
+    pct_darkened_storm4  = round(mean(storm_4 < storm_3) * 100, 1)
+  )
+
+```
+
+```{r}
+storm4_clean <- terra::crop(r_storm_4, roi_hawaii)
+storm4_clean <- terra::mask(storm4_clean, roi_hawaii)
+
+after1_clean <- terra::crop(r_after_1, roi_hawaii)
+after1_clean <- terra::mask(after1_clean, roi_hawaii)
+
+paired_recovery_values <- tibble(
+  storm_4 = values(storm4_clean)[, 1],
+  after_1 = values(after1_clean)[, 1]
+) |> 
+  filter(!is.na(storm_4), !is.na(after_1)) 
+
+ggplot(paired_recovery_values, aes(x = storm_4, y = after_1)) + 
+  geom_point(alpha = 0.15, size = 0.5) +
+  geom_abline(slope = 1, intercept = 0, color = "firebrick", linetype = "dashed") +
+  labs(
+    title = "Oahu: After 1 vs. Storm 4 Radiance, Per Pixel", 
+    subtitle = "Points above the dashed line got brighter in the recovery period", 
+    x = "Storm-night 4 radiance", 
+    y = "After-night 1 radiance"
+  ) + 
+  theme_minimal()
+
+paired_recovery_values |> 
+  summarize(
+    n_brightened_in_recovery = sum(after_1 > storm_4),
+    n_total                  = n(),
+    pct_brightened_recovery  = round(mean(after_1 > storm_4) * 100, 1)
+  )
+
+```
+
+```{r}
+after1_clean <- terra::crop(r_after_1, roi_hawaii)
+after1_clean <- terra::mask(after1_clean, roi_hawaii)
+
+after2_clean <- terra::crop(r_after_2, roi_hawaii)
+after2_clean <- terra::mask(after2_clean, roi_hawaii)
+
+paired_after_values <- tibble(
+  after_1 = values(after1_clean)[, 1],
+  after_2 = values(after2_clean)[, 1]
+) |> 
+  filter(!is.na(after_1), !is.na(after_2)) 
+
+ggplot(paired_after_values, aes(x = after_1, y = after_2)) + 
+  geom_point(alpha = 0.15, size = 0.5) +
+  geom_abline(slope = 1, intercept = 0, color = "firebrick", linetype = "dashed") +
+  labs(
+    title = "Oahu: After 2 vs. After 1 Radiance, Per Pixel", 
+    subtitle = "Points below the dashed line dimmed in period 2; above got brighter", 
+    x = "After-night 1 radiance", 
+    y = "After-night 2 radiance"
+  ) + 
+  theme_minimal()
+
+paired_after_values |> 
+  summarize(
+    n_darkened_in_after2 = sum(after_2 < after_1),
+    n_total              = n(),
+    pct_darkened_after2  = round(mean(after_2 < after_1) * 100, 1)
+  )
+
+```
+
+```{r}
+after2_clean <- terra::crop(r_after_2, roi_hawaii)
+after2_clean <- terra::mask(after2_clean, roi_hawaii)
+
+after3_clean <- terra::crop(r_after_3, roi_hawaii)
+after3_clean <- terra::mask(after3_clean, roi_hawaii)
+
+paired_after_values <- tibble(
+  after_2 = values(after2_clean)[, 1],
+  after_3 = values(after3_clean)[, 1]
+) |> 
+  filter(!is.na(after_2), !is.na(after_3)) 
+
+ggplot(paired_after_values, aes(x = after_2, y = after_3)) + 
+  geom_point(alpha = 0.15, size = 0.5) +
+  geom_abline(slope = 1, intercept = 0, color = "firebrick", linetype = "dashed") +
+  labs(
+    title = "Oahu: After 3 vs. After 2 Radiance, Per Pixel", 
+    subtitle = "Points below the dashed line dimmed in period 3; above got brighter", 
+    x = "After-night 2 radiance", 
+    y = "After-night 3 radiance"
+  ) + 
+  theme_minimal()
+
+paired_after_values |> 
+  summarize(
+    n_darkened_in_after3 = sum(after_3 < after_2),
+    n_total              = n(),
+    pct_darkened_after3  = round(mean(after_3 < after_2) * 100, 1)
+  )
+
+```
+
+```{r}
+after3_clean <- terra::crop(r_after_3, roi_hawaii)
+after3_clean <- terra::mask(after3_clean, roi_hawaii)
+
+after4_clean <- terra::crop(r_after_4, roi_hawaii)
+after4_clean <- terra::mask(after4_clean, roi_hawaii)
+
+paired_after_values <- tibble(
+  after_3 = values(after3_clean)[, 1],
+  after_4 = values(after4_clean)[, 1]
+) |> 
+  filter(!is.na(after_3), !is.na(after_4)) 
+
+ggplot(paired_after_values, aes(x = after_3, y = after_4)) + 
+  geom_point(alpha = 0.15, size = 0.5) +
+  geom_abline(slope = 1, intercept = 0, color = "firebrick", linetype = "dashed") +
+  labs(
+    title = "Oahu: After 4 vs. After 3 Radiance, Per Pixel", 
+    subtitle = "Points below the dashed line dimmed in period 4; above got brighter", 
+    x = "After-night 3 radiance", 
+    y = "After-night 4 radiance"
+  ) + 
+  theme_minimal()
+
+paired_after_values |> 
+  summarize(
+    n_darkened_in_after4 = sum(after_4 < after_3),
+    n_total              = n(),
+    pct_darkened_after4  = round(mean(after_4 < after_3) * 100, 1)
+  )
+
+```
+
+```{r}
+baseline_clean <- terra::crop(baseline_mean, roi_hawaii) |> terra::mask(roi_hawaii)
+after4_clean   <- terra::crop(r_after_4, roi_hawaii)     |> terra::mask(roi_hawaii)
+
+# Resample baseline to match the pixel grid structure of your after-night imagery
+baseline_resampled <- terra::resample(baseline_clean, after4_clean, method = "bilinear")
+
+paired_recovery_final <- tibble(
+  baseline = values(baseline_resampled)[, 1],
+  after_4  = values(after4_clean)[, 1]
+) |> 
+  filter(!is.na(baseline), !is.na(after_4)) 
+
+ggplot(paired_recovery_final, aes(x = baseline, y = after_4)) + 
+  geom_point(alpha = 0.15, size = 0.5) +
+  geom_abline(slope = 1, intercept = 0, color = "firebrick", linetype = "dashed") +
+  labs(
+    title = "Oahu: After 4 vs. Baseline Radiance, Per Pixel", 
+    subtitle = "Points below the dashed line remain dimmer than normal baseline levels", 
+    x = "Baseline radiance", 
+    y = "After-night 4 radiance"
+  ) + 
+  theme_minimal()
+
+paired_recovery_final |> 
+  summarize(
+    n_still_darkened = sum(after_4 < baseline),
+    n_total          = n(),
+    pct_still_dark  = round(mean(after_4 < baseline) * 100, 1)
+  )
+
+```
+
+```{r map-abs-change}
+# 1. Clean and align the two layers to your study area boundary
+baseline_clean <- terra::crop(baseline_mean, roi_hawaii) |> terra::mask(roi_hawaii)
+storm_clean    <- terra::crop(r_storm_1, roi_hawaii)    |> terra::mask(roi_hawaii)
+
+# 2. Resample baseline to match the pixel grid structure of your storm imagery
+baseline_resampled <- terra::resample(baseline_clean, storm_clean, method = "bilinear")
+
+# 3. Calculate the absolute change (Storm minus Baseline)
+abs_change <- storm_clean - baseline_resampled
+
+# 4. Filter out very dim pixels (noise floor) to keep only meaningful changes
+# Set a threshold value based on your data (e.g., keeping changes where baseline > 0.5)
+# Adjust the '0.5' threshold below to fit your specific dataset's noise floor
+abs_change_meaningful <- terra::mask(abs_change, baseline_resampled > 0.5, maskvalues = FALSE)
+
+
+# 5. Build your map now that the object is successfully created
+ggplot() +
+  geom_spatraster(data = abs_change_meaningful) +
+  geom_sf(data = roi_hawaii, fill = NA, color = "black", linewidth = 0.4) +
+  scale_fill_gradient2(
+    low      = "darkred", 
+    mid      = "white", 
+    high     = "darkgreen", 
+    midpoint = 0, 
+    na.value = "transparent", 
+    name     = "Absolute\nchange"
+  ) + 
+  labs(
+    title    = "Oahu: Absolute Radiance Change — Dim/Medium/Bright Pixels Only", 
+    subtitle = paste0("Baseline vs. Storm Night 1 (", storm_dates_1, "); Very dim pixels (noise floor) excluded"),
+    x        = NULL, 
+    y        = NULL 
+  ) + 
+  coord_sf() + 
+  theme_minimal()
+
+```
