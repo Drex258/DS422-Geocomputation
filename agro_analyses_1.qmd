@@ -1,0 +1,55 @@
+---
+title: "Agro_data"
+format: html
+editor: visual
+---
+
+```{r}
+library("tidyverse")
+library("sf")
+library("here")
+library("mapview")
+library("RColorBrewer")
+```
+
+```{r}
+ag_2015 <- st_read(here("Data/Land_Use_2015_Baseline.geojson"))
+ag_2020 <- st_read(here("Data/Land_Use_2020_Update.geojson"))
+```
+
+```{r}
+#make a map
+mapview(ag_2015, zcol = "cropcatego")
+# RColorBrewer can make better
+```
+
+Distribution of Acrage
+
+```{r}
+ggplot(ag_2015, aes(x = acreage)) + 
+  geom_histogram() + 
+  theme_bw() +
+  facet_wrap(~island, scales = "free_y")
+```
+
+Questions:
+
+Did we add/lose ag land acrage between 2015 and 2020
+
+```{r}
+sum_2015_acrage <- sum(ag_2015$acreage)
+sum_2020_acrage <- sum(ag_2020$acreage)
+sum_2020_acrage - sum_2015_acrage
+```
+
+What has that land been converted to?
+
+one map that has the lost land marked
+
+ag land ownership
+
+crop acreage changes
+
+NDVI in lost ag land
+
+soil type
