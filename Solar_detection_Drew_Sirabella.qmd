@@ -43,3 +43,149 @@ ggplot(oahu_median_household_income, aes
   geom_point() + 
   geom_smooth(method = "lm")
 ```
+
+Make maps compatible and find overlap
+
+How to
+
+- Identify packages (st, tidyverse, tidycensus)
+- give data information to AI
+- tell it the goal
+- Identify best function(s) for sf
+- do a single censes tract to verify we are on track
+- find a check
+
+```{r}
+
+# 1. Fetch census income data with geometry
+oahu_income <- get_acs(
+  geography = "tract", 
+  variables = "B19013_001", 
+  state = "HI", 
+  county = "Honolulu", 
+  geometry = TRUE, 
+  year = 2022
+) %>% 
+  # Transform to local Oahu UTM projection (meters) for accurate spatial analysis
+  st_transform(crs = 32604)
+
+# 2. Load your solar panel GeoJSON data
+# Replace "your_file.geojson" with your actual file name
+solar_panels <- st_read(here("Data/oahu_solar_dedup_simple.geojson")) %>% 
+  # Ensure the projection matches the census data exactly
+  st_transform(crs = 32604) %>%
+  st_make_valid() # Fixes any minor geometry/topology issues in polygon outlines
+
+# -------------------------------------------------------------------------
+# SCENARIO A: If your GeoJSON contains POINTS (Counts per Tract)
+# -------------------------------------------------------------------------
+solar_points_joined <- st_join(solar_panels, oahu_income, join = st_intersects)
+
+oahu_analysis_points <- oahu_income %>% 
+  left_join(
+    solar_points_joined %>% 
+      st_drop_geometry() %>% 
+      group_by(GEOID) %>% 
+      summarise(solar_panel_count = n()),
+    by = "GEOID"
+  ) %>% 
+  mutate(solar_panel_count = replace_na(solar_panel_count, 0))
+
+# -------------------------------------------------------------------------
+# SCENARIO B: If your GeoJSON contains POLYGONS (Area Overlap)
+# -------------------------------------------------------------------------
+# Intersect the physical shapes
+solar_poly_intersect <- st_intersection(solar_panels, oahu_income) %>% 
+  mutate(intersect_area_m2 = as.numeric(st_area(geometry)))
+
+oahu_analysis_poly <- oahu_income %>% 
+  left_join(
+    solar_poly_intersect %>% 
+      st_drop_geometry() %>% 
+      group_by(GEOID) %>% 
+      summarise(solar_area_m2 = sum(intersect_area_m2)),
+    by = "GEOID"
+  ) %>% 
+  mutate(
+    solar_area_m2 = replace_na(solar_area_m2, 0),
+    tract_area_m2 = as.numeric(st_area(geometry)),
+    pct_solar_coverage = (solar_area_m2 / tract_area_m2) * 100
+  )
+
+```
+
+Points
+
+```{r}
+mapview(oahu_analysis_points, zcol = "estimate", layer.name = "Median Income") + 
+  mapview(oahu_analysis_points, zcol = "solar_panel_count", layer.name = "Panel Count")
+
+```
+
+Area
+
+```{r}
+mapview(oahu_analysis_poly, zcol = "estimate", layer.name = "Median Income") + 
+  mapview(oahu_analysis_poly, zcol = "pct_solar_coverage", layer.name = "% Solar Coverage")
+
+```
+
+Statistical test
+
+```{r}
+# 1. Fetch census income data
+oahu_income <- get_acs(
+  geography = "tract", 
+  variables = "B19013_001", 
+  state = "HI", 
+  county = "Honolulu", 
+  geometry = TRUE, 
+  year = 2022
+) %>% 
+  st_transform(crs = 32604) # Project to UTM Zone 4N (meters)
+
+# 2. Load the GeoJSON polygons using here()
+solar_polygons <- st_read(here("Data/oahu_solar_dedup_simple.geojson")) %>% 
+  st_transform(crs = 32604) %>% 
+  st_make_valid() # Fixes any minor geometry/topology issues in polygon outlines
+
+# 3. Calculate spatial overlap area
+solar_intersect <- st_intersection(solar_polygons, oahu_income) %>% 
+  mutate(intersect_area_m2 = as.numeric(st_area(geometry)))
+
+# 4. Aggregate overlap data back to the census tract level
+oahu_analysis <- oahu_income %>% 
+  left_join(
+    solar_intersect %>% 
+      st_drop_geometry() %>% 
+      group_by(GEOID) %>% 
+      summarise(solar_area_m2 = sum(intersect_area_m2, na.rm = TRUE)),
+    by = "GEOID"
+  ) %>% 
+  mutate(
+    solar_area_m2 = replace_na(solar_area_m2, 0),
+    tract_area_m2 = as.numeric(st_area(geometry)),
+    # Metric 1: Percentage of the entire census tract covered by solar
+    pct_solar_coverage = (solar_area_m2 / tract_area_m2) * 100
+  )
+
+# -------------------------------------------------------------------------
+# 5. STATISTICAL CORRELATION TEST
+# -------------------------------------------------------------------------
+
+# Filter out tracts where median income is missing (NA)
+correlation_data <- oahu_analysis %>% 
+  st_drop_geometry() %>% 
+  filter(!is.na(estimate))
+
+# Run a Spearman correlation (robust to outliers and skewed spatial data)
+cor_test_result <- cor.test(
+  correlation_data$estimate, 
+  correlation_data$pct_solar_coverage, 
+  method = "spearman"
+)
+
+# Print the statistical results
+print(cor_test_result)
+
+```
