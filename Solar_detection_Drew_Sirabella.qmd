@@ -189,3 +189,66 @@ cor_test_result <- cor.test(
 print(cor_test_result)
 
 ```
+
+```{r}
+ggplot(correlation_data, aes(x = estimate, y = pct_solar_coverage)) +
+  geom_point(alpha = 0.5, color = "darkblue") +
+  geom_smooth(method = "lm", color = "red", se = TRUE) +
+  scale_x_continuous(labels = scales::label_dollar()) +
+  labs(
+    title = "Oahu Solar Adoption vs. Median Household Income",
+    x = "Median Household Income (2022 ACS)",
+    y = "% Census Tract Area Covered by Solar"
+  ) +
+  theme_minimal()
+
+```
+
+```{r}
+library(geosam)
+```
+
+```{r}
+geosam_install(
+  method = "conda", 
+  conda = "C:/Users/dsira/miniconda3/Scripts/conda.exe"
+)
+
+```
+
+```{r}
+library(geosam)
+geosam_status()
+```
+
+Test
+
+```{r}
+field <- sam_detect(
+  bbox = c(-97.372, 32.707, -97.366, 32.712),
+  text = "football field",
+  source = "mapbox",
+  zoom = 17
+)
+```
+
+```{r}
+plot(field)
+sam_view(field)
+```
+
+detect solar panels
+
+```{r}
+field <- sam_detect(
+  bbox = c(-158.2624, 21.25545, -157.6633, 21.7077),
+  text = "solar panels",
+  source = "mapbox",
+  zoom = 15
+)
+```
+
+```{r}
+plot(solar)
+sam_view(solar)
+```
