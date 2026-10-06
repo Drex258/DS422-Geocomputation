@@ -1,0 +1,231 @@
+---
+title: "Isochrones"
+format: html
+editor: visual
+---
+
+An **isochrone** is a line or polygon on a map that connects all points reachable from a specific starting location within a set amount of time
+
+[Inspiration from Kyle Walker](https://walker-data.com/posts/accessibility-surface/)
+
+### Libraries
+
+```{r}
+library(mapboxapi)
+library(leaflet)
+library(mapview)
+```
+
+### Create Isochrone
+
+```{r}
+isos <- mb_isochrone(
+  location = "One Bowerman Dr, Beaverton, OR 97005",
+  profile = "driving",
+  time = 1:45
+)
+```
+
+```{r}
+mapview(isos, zcol = "time")
+```
+
+```{r}
+library(sf)
+library(fasterize)
+
+isos_proj <- st_transform(isos, 32618)
+
+template <- raster(isos_proj, resolution = 100)
+
+iso_surface <- fasterize(isos_proj, template, field = "time", fun = "min")
+
+iso_surface
+pal <- colorNumeric("plasma", isos$time, na.color = "transparent")
+
+nike_map <- leaflet() %>%
+  addMapboxTiles(style_id = "light-v9",
+                 username = "mapbox",
+                 scaling_factor = "0.5x") %>%
+  addRasterImage(iso_surface, colors = pal, opacity = 0.5) %>%
+  addLegend(values = isos$time, pal = pal,
+            title = "Drive-time from<br>Nike HQ")
+
+nike_map
+```
+
+```{r}
+nike_icon <- makeIcon(
+  iconUrl = "https://nike.com/favicon.ico",
+  iconWidth = 25,
+  iconHeight = 25
+)
+
+nike_hq <- mb_geocode("One Bowerman Dr, Beaverton, OR 97005")
+
+nike_map %>%
+  addMarkers(lng = nike_hq[1], lat = nike_hq[2], icon = nike_icon)
+```
+
+### Your turn - Recreate for Chaminade
+
+```{r}
+isos <- mb_isochrone(
+  location = "3140 Waialae Ave, Honolulu, HI 96816",
+  profile = "driving",
+  time = 1:45
+)
+```
+
+```{r}
+mapview(isos, zcol = "time")
+```
+
+```{r}
+isos_proj <- st_transform(isos, 32618)
+
+template <- raster(isos_proj, resolution = 100)
+
+iso_surface <- fasterize(isos_proj, template, field = "time", fun = "min")
+
+iso_surface
+pal <- colorNumeric("plasma", isos$time, na.color = "transparent")
+
+chaminade_map <- leaflet() %>%
+  addMapboxTiles(style_id = "light-v9",
+                 username = "mapbox",
+                 scaling_factor = "0.5x") %>%
+  addRasterImage(iso_surface, colors = pal, opacity = 0.5) %>%
+  addLegend(values = isos$time, pal = pal,
+            title = "Drive-time from<br>Chaminade")
+
+chaminade_map
+```
+
+### Lets go further
+
+Question: Can we make an accessibility surfaces map for trauma centers, ER's, hospitals, fire stations etc. Maybe combine all of them into one shiny app. Let's strategise and design...
+
+App Design
+
+fire stations: mb_isocrone works well
+
+ambulance: mb_isocrone works for ambulance to pashunt, but form there
+
+shelters: - Faith
+
+cant go off base travel time in island wide emergency situations
+
+hospitals, trauma centers, etc... - Calvin
+
+senior / other transportation - Drew
+
+police station hostage situation
+
+swim, lifeguard response - DJ
+
+```{r}
+# Clear environment and load libraries
+rm(list = ls())
+library(mapboxapi)
+library(sf)
+library(ggplot2)
+library(dplyr)
+library(purrr)
+
+# Set your Mapbox token globally
+my_token <- "pk.eyJ1IjoiY29ubm9yZmx5bm4iLCJhIjoiY2x5cWFtZzk0MGU4MzJqb2F0a2w1bGJkZiJ9.fB81ysj5JOrG16upKvzk4A"
+
+# Step 1: Define the multi-layered dataset with exact addresses
+hubs_df <- data.frame(
+  name = c(
+    "OTS Middle Street (TheHandi-Van)", 
+    "Catholic Charities", 
+    "Royal Kūpuna Transport", 
+    "Pasion Transportation", 
+    "Project Dana"
+  ),
+  address = c(
+    "811 Middle St, Honolulu, HI 96819", 
+    "1822 Keʻeaumoku St, Honolulu, HI 96822", 
+    "2332 Pio Pl, Honolulu, HI 96819", 
+    "91-2026 Kamakana St, Ewa Beach, HI 96706", 
+    "902 University Ave, Honolulu, HI 96826"
+  ),
+  service_type = c(
+    "Public Paratransit", 
+    "Senior Call-Van", 
+    "Private NEMT", 
+    "Private NEMT", 
+    "Volunteer Medical Escort"
+  ),
+  stringsAsFactors = FALSE
+)
+
+# Step 2: Geocode addresses individually using rowwise iteration
+hubs_sf_list <- hubs_df %>%
+  split(1:nrow(.)) %>%
+  map(function(row) {
+    coords <- mb_geocode(row$address, access_token = my_token)
+    st_sf(
+      name = row$name,
+      address = row$address,
+      service_type = row$service_type,
+      geometry = st_sfc(st_point(coords), crs = 4326)
+    )
+  })
+
+hubs_sf <- do.call(rbind, hubs_sf_list)
+
+# Step 3: Call the Mapbox Isochrone API sequentially with 15, 30, 45, and 60-minute time intervals
+isochrones_list <- list()
+
+for (i in 1:nrow(hubs_sf)) {
+  coords_vector <- as.numeric(st_coordinates(hubs_sf[i, ]))
+  
+  iso <- mb_isochrone(
+    location = coords_vector,
+    time = c(15, 30, 45, 60), # Updated intervals
+    profile = "driving-traffic", 
+    depart_at = "2026-10-12T08:00:00Z", # Configured for a Monday morning rush hour
+    access_token = my_token
+  )
+  
+  # Append metadata fields to the output poly
+  iso$hub_name <- hubs_sf$name[i]
+  iso$service_type <- hubs_sf$service_type[i]
+  isochrones_list[[i]] <- iso
+}
+
+all_isochrones <- bind_rows(isochrones_list)
+
+# Step 4: Standardize factors for map layering
+# Order labels sequentially so they stack nicely in the map legend
+all_isochrones <- all_isochrones %>%
+  mutate(contour_label = factor(
+    paste0(time, " min drive"), 
+    levels = c("15 min drive", "30 min drive", "45 min drive", "60 min drive")
+  )) %>%
+  arrange(desc(time))
+
+# Step 5: Plot separated by Service Type using facet_wrap
+ggplot() +
+  geom_sf(data = all_isochrones, aes(fill = contour_label), alpha = 0.4, color = "white", size = 0.1) +
+  geom_sf(data = hubs_sf, color = "black", fill = "yellow", size = 3, shape = 21) +
+  scale_fill_viridis_d(
+    direction = -1, # Inverts the scale color order to match travel thresholds smoothly
+    name = "Drive Time From Hub"
+  ) +
+  facet_wrap(~service_type) + 
+  theme_minimal() +
+  labs(
+    title = "Oʻahu Specialty Medical Transit Reachability (Expanded)",
+    subtitle = "15 to 60-minute isochrones separated by tier (8:00 AM Traffic Grid)",
+    caption = "Data modeled using Mapbox Navigation Service API Matrix via mb_isochrone()."
+  ) +
+  theme(
+    strip.text = element_text(face = "bold", size = 11),
+    panel.background = element_rect(fill = "#fafafa", color = NA)
+  )
+
+```
