@@ -221,7 +221,7 @@ ggplot() +
   labs(
     title = "Oʻahu Specialty Medical Transit Reachability (Expanded)",
     subtitle = "15 to 60-minute isochrones separated by tier (8:00 AM Traffic Grid)",
-    caption = "Data modeled using Mapbox Navigation Service API Matrix via mb_isochrone()."
+    caption = "Data modeled using Mapbox Navigation Service API Matrix via mb_isochrone(). Code made with AI (Google Gemini)"
   ) +
   theme(
     strip.text = element_text(face = "bold", size = 11),
