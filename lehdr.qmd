@@ -4,7 +4,7 @@ format: html
 editor: visual
 ---
 
-### Welcome 
+### Welcome
 
 This is our Geocomputation lab on Employer-Household Dynamics. This is an R analysis [inspired by this post](https://walker-data.com/posts/lodes-2020/)
 
@@ -52,7 +52,7 @@ What do these column names mean?
 Each row is one home-tract-to-work-tract pair. The numbers count **jobs** (in your call, `JT00` means all jobs), so a person with two jobs can appear twice.
 
 | Column | Meaning |
-|----|----|
+|------------------------------------|------------------------------------|
 | `year` | Data year (2022) |
 | `state` | State abbreviation |
 | `w_tract` | GEOID of the **work** tract |
@@ -192,8 +192,295 @@ m <- maplibre(
 m
 ```
 
-### Your Turn 
+### Your Turn
 
 Challenge 1: Recreate [this figure](https://github.com/jamgreen/lehdr/blob/master/vignettes/figures/fig1_balt_self_containment.png) for Hawaii
 
+```{r}
+# Install missing packages if needed:
+# install.packages(c("lehdr", "tidycensus", "tidyverse", "sf", "viridis"))
+
+library(lehdr)
+library(tidycensus)
+library(tidyverse)
+library(sf)
+library(viridis)
+
+# 1. Pull LODES Origin-Destination (OD) data for Hawaii
+# This gets all primary job commutes (JT01) for all workers (S000)
+hi_od <- grab_lodes(
+  state = "hi",
+  year = 2021,
+  lodes_type = "od",
+  job_type = "JT01", 
+  segment = "S000"   
+)
+
+# 2. Extract Census Tracts (first 11 digits of the 15-digit FIPS)
+hi_tract_flows <- hi_od %>%
+  mutate(
+    h_tract = substr(h_geocode, 1, 11),
+    w_tract = substr(w_geocode, 1, 11)
+  )
+
+# 3. Calculate metrics per Residence Tract
+# Total workforce living in tract vs. those who also work there
+hi_commute_stats <- hi_tract_flows %>%
+  group_by(h_tract) %>%
+  summarize(
+    total_resident_workers = sum(S000),
+    stay_in_tract = sum(S000[h_tract == w_tract]),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    pct_stay = (stay_in_tract / total_resident_workers) * 100
+  )
+
+# 4. Get Spatial Boundaries from Census (Filtering to Honolulu County for detail)
+# Note: You can remove the county filter to map the whole state
+hi_geometry <- get_acs(
+  geography = "tract",
+  variables = "B08301_001", # Total workers 16+ (Census baseline)
+  state = "HI",
+  county = "Honolulu",       # Filters to Oahu for high-resolution mapping
+  year = 2021,
+  geometry = TRUE
+)
+
+# 5. Join spatial data with commuting stats
+map_data <- hi_geometry %>%
+  left_join(hi_commute_stats, by = c("GEOID" = "h_tract")) %>%
+  replace_na(list(pct_stay = 0, stay_in_tract = 0))
+
+# 6. Generate the Map
+ggplot(data = map_data) +
+  # Fixed: Changed color to an 8-character hex code (#FFFFFFFF with 33 for ~20% alpha)
+  geom_sf(aes(fill = pct_stay), color = "#FFFFFF33", size = 0.05) +
+  scale_fill_viridis_c(
+    option = "mako", 
+    name = "% of Workers",
+    labels = function(x) paste0(x, "%")
+  ) +
+  labs(
+    title = "Self-Contained Commuters in Honolulu County",
+    subtitle = "Percentage of resident workers who stay within their home census tract for work",
+    caption = "Data: US Census Bureau LEHD LODES (2021)"
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    axis.text = element_blank(),
+    axis.title = element_blank()
+  )
+
+```
+
+```{r}
+# Install mapview if you don't have it:
+# install.packages("mapview")
+
+library(mapview)
+
+# Configure mapview options to use a clean background
+mapviewOptions(fgb = FALSE) 
+
+# Generate the interactive map
+mapview(
+  map_data, 
+  zcol = "pct_stay",                # The column to color the tracts by
+  col.regions = viridis::mako(100), # Color palette matching our ggplot
+  layer.name = "% of Workers Staying",
+  label = paste0("Tract: ", map_data$GEOID, " | Stay: ", round(map_data$pct_stay, 1), "%")
+)
+
+```
+
 Challenge 2: Recreate t[his figure](https://github.com/jamgreen/lehdr/blob/master/vignettes/figures/fig2_md_job_change.png) for a state of your choosing
+
+```{r}
+# Install missing packages if needed:
+# install.packages(c("lehdr", "tidycensus", "tidyverse", "sf", "mapview", "viridis"))
+
+library(lehdr)
+library(tidycensus)
+library(tidyverse)
+library(sf)
+library(mapview)
+library(leafpop)
+
+# 1. Pull Workplace Area Characteristics (WAC) data for Kansas
+# Fixed: We add `agg_geo = "county"` to let lehdr handle the grouping automatically.
+wac_2011 <- grab_lodes(
+  state = "ks", 
+  year = 2011, 
+  lodes_type = "wac", 
+  job_type = "JT01", 
+  segment = "S000",
+  agg_geo = "county"
+)
+
+wac_2021 <- grab_lodes(
+  state = "ks", 
+  year = 2021, 
+  lodes_type = "wac", 
+  job_type = "JT01", 
+  segment = "S000",
+  agg_geo = "county"
+)
+
+# 2. Extract job metrics using the correct column name ('C000' represents total counts)
+county_jobs_2011 <- wac_2011 %>%
+  select(county_fips = w_county, jobs_2011 = C000)
+
+county_jobs_2021 <- wac_2021 %>%
+  select(county_fips = w_county, jobs_2021 = C000)
+
+# 3. Combine years and calculate Net Job Growth metrics
+growth_data <- county_jobs_2011 %>%
+  inner_join(county_jobs_2021, by = "county_fips") %>%
+  mutate(
+    net_change = jobs_2021 - jobs_2011,
+    pct_growth = round((net_change / jobs_2011) * 100, 1)
+  )
+
+# 4. Fetch Kansas County geometry
+ks_counties <- get_acs(
+  geography = "county",
+  variables = "B01001_001", # Baseline total population
+  state = "KS",
+  year = 2021,
+  geometry = TRUE
+)
+
+# 5. Merge the spatial boundaries with job metrics
+map_data <- ks_counties %>%
+  left_join(growth_data, by = c("GEOID" = "county_fips")) %>%
+  select(NAME, GEOID, jobs_2011, jobs_2021, net_change, pct_growth, geometry)
+
+# 6. Initialize mapview options for clean background
+mapviewOptions(fgb = FALSE)
+
+# 7. Render Interactive Map (using percent growth)
+mapview(
+  map_data,
+  zcol = "pct_growth",                     # Metric to shade counties by
+  col.regions = viridis::rocket(100),       # High-contrast color palette
+  layer.name = "Job Growth % (2011-2021)",
+  popup = popupTable(
+    map_data, 
+    zcol = c("NAME", "jobs_2011", "jobs_2021", "net_change", "pct_growth")
+  )
+)
+
+
+```
+
+```{r}
+# Combine both layers on a single map canvas
+mapview(
+  map_data,
+  zcol = "net_change",
+  col.regions = viridis::mako(100),
+  layer.name = "Net Job Change (Count)",
+  popup = leafpop::popupTable(
+    map_data, 
+    zcol = c("NAME", "jobs_2011", "jobs_2021", "net_change", "pct_growth")
+  )
+) + 
+  mapview(
+    map_data,
+    zcol = "pct_growth",
+    col.regions = viridis::rocket(100),
+    layer.name = "Job Growth %",
+    popup = leafpop::popupTable(
+      map_data, 
+      zcol = c("NAME", "jobs_2011", "jobs_2021", "net_change", "pct_growth")
+    )
+  )
+
+```
+
+```{r}
+
+od_hi <- grab_lodes(
+  state = "hi",
+  year = 2022,
+  lodes_type = "od",
+  job_type = "JT01", 
+  segment = "S000" ,
+  agg_geo = "tract"
+)
+```
+
+```{r}
+commute_hi <- compute_commute_stats(od_hi, agg_geo = "tract")
+```
+
+```{r}
+hi_geo <- tracts(state = "HI", year = 2022, cb = TRUE) %>%
+  select(GEOID, geometry)
+```
+
+```{r}
+commute_map_df <- hi_geo %>%
+  left_join(commute_hi, by = c("GEOID" = "tract"))
+```
+
+```{r}
+mapview(commute_map_df, zcol = "self_containment")
+```
+
+```{r}
+wac_ks_2011 <- grab_lodes(
+  state = "ks",
+  year = 2011,
+  lodes_type = "wac",
+  job_type = "JT01", 
+  segment = "S000" ,
+  agg_geo = "county"
+)
+
+wac_ks_2021 <- grab_lodes(
+  state = "ks",
+  year = 2021,
+  lodes_type = "wac",
+  job_type = "JT01", 
+  segment = "S000" ,
+  agg_geo = "county"
+)
+```
+
+```{r}
+county_jobs_ks_2011 <- wac_ks_2011 %>%
+  select(county_fips = w_county, jobs_2011 = C000)
+
+county_jobs_ks_2021 <- wac_ks_2021 %>%
+  select(county_fips = w_county, jobs_2021 = C000)
+```
+
+```{r}
+growth_data_ks <- county_jobs_ks_2011 %>%
+  inner_join(county_jobs_ks_2021, by = "county_fips") %>%
+  mutate(
+    net_change = jobs_2021 - jobs_2011,
+    pct_growth = round((net_change / jobs_2011) * 100, 1)
+  )
+```
+
+```{r}
+ks_geo <- counties(state = "KS", year = 2021, cb = TRUE) %>%
+  select(GEOID, geometry)
+```
+
+```{r}
+growth_map_ks <- ks_geo %>%
+  left_join(growth_data_ks, by = c("GEOID" = "county_fips"))
+```
+
+```{r}
+mapview(growth_map_ks, zcol = "pct_growth")
+```
+
+```{r}
+mapview(growth_map_ks, zcol = "net_change")
+```
