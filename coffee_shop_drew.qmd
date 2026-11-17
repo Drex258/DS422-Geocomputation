@@ -1,0 +1,426 @@
+---
+title: "coffee_shop_Drew"
+format: html
+editor: visual
+---
+
+```{r}
+
+# librarys
+
+library(osmdata)
+library(sf)
+library(dplyr)
+library(leaflet)
+library(tidyverse)
+library(here)
+library(sf)
+library(mapview)
+library(tidycensus)
+library(lehdr)
+library(leafpop)
+library(viridis)
+library(mapgl)
+library(mapboxapi)
+```
+
+### Step 1 - Logo
+
+```{r}
+
+# dispaly coffee logo
+
+knitr::include_graphics("C:/Users/dsira/Desktop/DS422-Geocomputation/Data/coffee_logo.png")
+
+```
+
+### Step 2 - Finding a location
+
+275 Beach Walk 2155 Kalakaua Ave, Honolulu, Hi 96815
+
+21.2802° N, 157.8308° W
+
+### Step 3 - Map the competition
+
+```{r}
+
+
+# map of compatition
+
+library(osmdata)
+
+oahu_bb <- c(xmin = -158.30, ymin = 21.24, xmax = -157.63, ymax = 21.73)
+
+cafe_query <- opq(bbox = oahu_bb, timeout = 180) |> add_osm_features(features = list("amenity" = "cafe", "shop" = "coffee"))
+
+osm_raw <- osmdata_sf(cafe_query)
+
+cafe_points <- as.data.frame(osm_raw$osm_points)
+```
+
+```{r}
+
+# 1. Define your shop's coordinates (21.2802° N, 157.8308° W)
+shop_lon_drew <- -157.8308
+shop_lat_drew <- 21.2802
+
+# 2. Create a tighter bounding box (~1 km radius around your shop)
+buffer_drew <- 0.01 
+local_bb_drew <- c(
+  xmin = shop_lon_drew - buffer_drew, 
+  ymin = shop_lat_drew - buffer_drew, 
+  xmax = shop_lon_drew + buffer_drew, 
+  ymax = shop_lat_drew + buffer_drew
+)
+
+# 3. Query OpenStreetMap for nearby cafes and coffee shops
+cafe_query_drew <- opq(bbox = local_bb_drew, timeout = 120) |> 
+  add_osm_features(features = list("amenity" = "cafe", "shop" = "coffee"))
+
+osm_raw_drew <- osmdata_sf(cafe_query_drew)
+
+# 4. Keep as an 'sf' spatial object and filter out unnamed nodes
+competitors_drew <- osm_raw_drew$osm_points |> 
+  filter(!is.na(name))
+
+# 5. Plot your shop and local competition on an interactive map
+bean_icon_drew <- makeIcon(
+  iconUrl = "C:/Users/dsira/Desktop/DS422-Geocomputation/Data/coffee_logo.png",
+  iconWidth = 40, iconHeight = 40
+)
+
+leaflet() |> 
+  addTiles() |> 
+  # Add your coffee shop with your custom logo
+  addMarkers(
+    lng = shop_lon_drew, 
+    lat = shop_lat_drew, 
+    icon = bean_icon_drew,
+    popup = "<b>Bean World Coffee Co.</b><br>Proposed Location"
+  ) |> 
+  # Add competing cafes as circle markers
+  addCircleMarkers(
+    data = competitors_drew,
+    color = "#6F4E37",
+    radius = 6,
+    fillOpacity = 0.8,
+    popup = ~paste0("<b>Competitor:</b> ", name)
+  )
+
+```
+
+A way of standing out is to use CO2 and N2 on the coffee to change the flavers
+
+### Step 4.1 - Resident Customer Demographics
+
+```{r}
+
+# 1. Pull Total Population (B01001_001) and Median Household Income (B19013_001)
+customer_base <- get_acs(
+  geography = "tract", 
+  variables = c(
+    total_pop = "B01001_001",
+    med_income = "B19013_001"
+  ), 
+  state = "HI", 
+  county = "Honolulu", 
+  geometry = TRUE, 
+  year = 2022,
+  output = "wide" # Puts each variable in its own column (e.g., total_popE, med_incomeE)
+)
+
+# 2. Calculate area (sq miles) and population density, and filter out unpopulated ocean/mountain tracts
+customer_base_clean <- customer_base |>
+  filter(total_popE > 0) |>
+  mutate(
+    area_sq_miles = as.numeric(st_area(geometry)) / 2589988.11,
+    pop_density = round(total_popE / area_sq_miles, 0)
+  )
+
+# 3. Create a 1.5 km trade area buffer around Bean World Coffee Co.
+shop_point <- st_sfc(st_point(c(-157.8308, 21.2802)), crs = 4326) |>
+  st_transform(st_crs(customer_base_clean)) # Match CRS with Census data
+
+trade_area <- st_buffer(shop_point, dist = 1500) # 1500 meters (~1 mile)
+
+# 4. Filter to census tracts that intersect your Waikiki trade area
+local_customers <- st_filter(customer_base_clean, trade_area)
+
+# 5. Interactive exploration with mapview
+mapview(local_customers, zcol = "pop_density", layer.name = "Pop Density (per sq mi)") +
+  mapview(shop_point, col.regions = "#008080", cex = 8, layer.name = "Bean World Coffee Co.")
+```
+
+### Step 4.2 - Working Customer Demographics
+
+use lehdr to get travelers data
+
+```{r}
+hi_od <- grab_lodes(
+  state      = "hi",
+  year       = 2022,
+  lodes_type = "od",
+  job_type   = "JT00",
+  segment    = "S000",
+  state_part = "main",
+  agg_geo    = "tract",
+  geometry   = TRUE
+) |>
+  st_as_sf(sf_column_name = "w_geometry")
+```
+
+```{r}
+dest_point_coffee <- st_sfc(st_point(c(-157.8308, 21.2802)), crs = 4326) |>
+  st_transform(st_crs(hi_od))
+
+# One row per work tract, keeping only the ID and its polygon
+w_tracts <- hi_od[!duplicated(hi_od$w_tract), "w_tract"]
+
+dest_geoid <- w_tracts$w_tract[lengths(st_intersects(w_tracts, dest_point_coffee)) > 0]
+dest_geoid
+```
+
+```{r}
+top_commutes <- hi_od |>
+  filter(w_tract == dest_geoid, S000 >= 25, h_tract != w_tract)
+
+to_lonlat <- function(g) {
+  g |>
+    st_transform(26904) |>        # UTM 4N for accurate interior points
+    st_point_on_surface() |>
+    st_transform(4326) |>
+    st_coordinates()
+}
+
+h_xy <- to_lonlat(top_commutes$h_geometry)
+w_xy <- to_lonlat(top_commutes$w_geometry)
+
+top_commutes <- top_commutes |>
+  st_drop_geometry() |>           # drops w_geometry (the active column)
+  select(-h_geometry) |>          # h_geometry is a second sfc column, drop it too
+  mutate(h_lon = h_xy[, 1], h_lat = h_xy[, 2],
+         w_lon = w_xy[, 1], w_lat = w_xy[, 2])
+```
+
+```{r}
+make_arc <- function(x1, y1, x2, y2, n = 60, curve = 0.25) {
+  mx <- (x1 + x2) / 2; my <- (y1 + y2) / 2
+  cx <- mx - (y2 - y1) * curve               # control point offset
+  cy <- my + (x2 - x1) * curve
+  t  <- seq(0, 1, length.out = n)
+  st_linestring(cbind(
+    (1 - t)^2 * x1 + 2 * (1 - t) * t * cx + t^2 * x2,
+    (1 - t)^2 * y1 + 2 * (1 - t) * t * cy + t^2 * y2
+  ))
+}
+
+flows_sf <- top_commutes |>
+  mutate(
+    geometry = pmap(list(h_lon, h_lat, w_lon, w_lat), make_arc),
+    tooltip  = paste0(S000, " commuters<br>from tract ", h_tract)
+  ) |>
+  st_as_sf(crs = 4326)
+
+origins_sf <- top_commutes |>
+  st_as_sf(coords = c("h_lon", "h_lat"), crs = 4326)
+
+dest_sf <- top_commutes |>
+  slice(1) |>
+  st_as_sf(coords = c("w_lon", "w_lat"), crs = 4326)
+
+```
+
+```{r}
+max_jobs <- max(flows_sf$S000)
+
+m <- maplibre(
+  style   = carto_style("positron"),
+  center  = c(-157.98, 21.42),
+  zoom    = 9.6,
+  pitch   = 50,
+  bearing = -20
+) |>
+  add_line_layer(
+    id         = "flows",
+    source     = flows_sf,
+    line_color = interpolate(
+      column = "S000",
+      values = c(25, max_jobs),
+      stops  = c("#f06400", "#00c800")     # orange -> green, echoing the original
+    ),
+    line_width = interpolate(
+      column = "S000",
+      values = c(25, max_jobs),
+      stops  = c(1, 8)
+    ),
+    line_opacity = 0.8,
+    tooltip      = "tooltip",
+    hover_options = list(line_color = "#ffff00")
+  ) |>
+  add_circle_layer(
+    id           = "origins",
+    source       = origins_sf,
+    circle_color = "#f06400",
+    circle_radius = 3,
+    circle_opacity = 0.8
+  ) |>
+  add_circle_layer(
+    id                  = "destination",
+    source              = dest_sf,
+    circle_color        = "#00c800",
+    circle_radius       = 8,
+    circle_stroke_color = "white",
+    circle_stroke_width = 2
+  ) |>
+  add_legend(
+    "Commuters to the airport / JBPHH tract",
+    values = c("Fewer", "More"),
+    colors = c("#f06400", "#00c800"),
+    type   = "continuous"
+  )
+
+m
+```
+
+### Step 5 - What's nearby?
+
+```{r}
+
+# 1. Define Bean World Coffee Co. coordinates
+coffee_loc <- c(-157.8308, 21.2802)
+
+# 2. Generate 5-minute driving and 10-minute walking isochrones
+drive_5min <- mb_isochrone(
+  location  = coffee_loc,
+  profile   = "driving",
+  time      = 5,
+  id_column = "name"
+) |>
+  mutate(mode = "5-Min Drive")
+
+walk_10min <- mb_isochrone(
+  location  = coffee_loc,
+  profile   = "walking",
+  time      = 10,
+  id_column = "name"
+) |>
+  mutate(mode = "10-Min Walk")
+
+shop_sf <- st_as_sf(
+  data.frame(lon = -157.8308, lat = 21.2802, name = "Bean World Coffee Co."),
+  coords = c("lon", "lat"),
+  crs = 4326
+)
+
+# 3. Build interactive MapLibre map with toggleable layers
+maplibre(
+  style  = carto_style("positron"),
+  center = coffee_loc,
+  zoom   = 13.5
+) |>
+  add_fill_layer(
+    id           = "drive_zone",
+    source       = drive_5min,
+    fill_color   = "#6F4E37",
+    fill_opacity = 0.25,
+    tooltip      = "mode"
+  ) |>
+  add_fill_layer(
+    id           = "walk_zone",
+    source       = walk_10min,
+    fill_color   = "#008080",
+    fill_opacity = 0.40,
+    tooltip      = "mode"
+  ) |>
+  add_circle_layer(
+    id                  = "shop_pin",
+    source              = shop_sf,
+    circle_color        = "#008080",
+    circle_radius       = 8,
+    circle_stroke_color = "white",
+    circle_stroke_width = 2,
+    tooltip             = "name"
+  ) |>
+  # Add interactive layer toggle menu in the top-right corner
+  add_layers_control(
+    layers = list(
+      "5-Min Drive Zone" = "drive_zone",
+      "10-Min Walk Zone" = "walk_zone"
+    ),
+    position = "top-right",
+    collapsible = TRUE
+  ) |>
+  add_navigation_control(position = "top-left")
+
+```
+
+### Step 6 - Do you need a generator?
+
+```{r}
+library(tidyverse)
+library(lubridate)
+
+# 1. Load the 2025 EAGLE-I dataset (update filename if needed)
+eagle_2025 <- read_csv("C:/Users/dsira/Desktop/DS422-Geocomputation/Data/eaglei_outages_2025.csv")
+
+# 2. Standardize column names to lowercase and filter for Honolulu County (FIPS 15003)
+honolulu_outages <- eagle_2025 |>
+  rename_with(tolower) |>
+  filter(fips_code == "15003" | (county == "Honolulu" & state == "Hawaii")) |>
+  mutate(
+    timestamp = ymd_hms(run_start_time),
+    date      = as_date(timestamp)
+  ) |>
+  arrange(timestamp)
+
+# 3. Identify distinct outage events (gaps > 15 mins mark the start of a new outage)
+honolulu_events <- honolulu_outages |>
+  filter(customers_out > 0) |>
+  mutate(
+    time_gap_mins = as.numeric(difftime(timestamp, lag(timestamp), units = "mins")),
+    new_event     = is.na(time_gap_mins) | time_gap_mins > 15,
+    event_id      = cumsum(new_event)
+  )
+
+# Print total number of distinct power outage events in 2025
+total_outage_events <- n_distinct(honolulu_events$event_id)
+print(paste("Honolulu County distinct power outage events in 2025:", total_outage_events))
+
+# 4. Summarize daily peak customers without power across 2025 for a clean line plot
+daily_outages <- honolulu_outages |>
+  group_by(date) |>
+  summarise(
+    peak_customers_out = max(customers_out, na.rm = TRUE),
+    outage_intervals   = sum(customers_out > 0, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# 5. Plot outages over time with ggplot2 (styled in Bean World Coffee Co. colors)
+ggplot(daily_outages, aes(x = date, y = peak_customers_out)) +
+  geom_line(color = "#008080", linewidth = 0.8) +
+  geom_point(
+    data = filter(daily_outages, peak_customers_out > quantile(peak_customers_out, 0.95)),
+    color = "#6F4E37",
+    size = 2
+  ) +
+  scale_x_date(date_breaks = "1 month", date_labels = "%b") +
+  scale_y_continuous(labels = scales::comma) +
+  labs(
+    title    = "Honolulu County Power Outages Over Time (2025)",
+    subtitle = paste0("Bean World Coffee Co. Trade Area (FIPS 15003) | ", total_outage_events, " Distinct Outage Events Recorded"),
+    x        = "Month (2025)",
+    y        = "Peak Customers Without Power (Daily)",
+    caption  = "Source: ORNL EAGLE-I 2025 Power Outage Dataset (15-minute intervals)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title    = element_text(face = "bold", color = "#4A2C18"),
+    plot.subtitle = element_text(color = "#006666"),
+    panel.grid.minor = element_blank()
+  )
+
+```
+
+### Step 7 - Conclusion
+
+I made a fun logo to get peoples attention. The location is large, and at busy building so there will be lots of foot traffic, and people going to work. There aren't that many coffee places in the area (about 47). The area does have a lot of people, but I know a to of that area is set up for tourism, which also helps with custimers. There are a lot of people that commute to the area. A massive part of Waikiki is within 5 min of driving or 10 min of walking.
